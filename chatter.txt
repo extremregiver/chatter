@@ -1,0 +1,220 @@
+// ==UserScript==
+// @name       chatter Group Chat
+// @namespace  http://chattergroup.edu/
+// @version    1.4
+// @description  Make a group of chatters in chatter and chat with each other
+// @match      http://www.chatter.com
+// @require http://code.jquery.com/jquery-latest.js
+// @author Streak324
+// ==/UserScript==
+ 
+var inputHTML = "chattermsg";
+var running = false;
+var amount;
+var chatterWindows = {};
+var chatbox = 'textarea.chatmsg';
+var sendButton = 'button.sendbtn';
+var startButton = 'textbtn';
+var interval;
+var kickIdlers = false;
+var idleDelay = 60000;
+var ownerNick = "OVERLORD";
+var counter = 1;
+ 
+if(window.name == '') {
+    $(document).ready(function () {
+        document.getElementById('header').insertAdjacentHTML('afterend', "<div style='background-color:black' id='chatter-settings'></div>");
+        $('#chatter-settings').append('<h2>Group Chat Options</h2>');
+        $('#chatter-settings').append("<label for='idle'>Autokick idlers</label><br />");
+        $('#chatter-settings').append('<input id="idleBox" type="checkbox" name="idle">');
+        $('#chatter-settings').append("<input id='idleText' type='text' name='idle' placeholder='In Milliseconds' disabled></br />");
+        $('#chatter-settings').append("<label for='numPeeps'>Type number of people in conversation</label><br />");
+        $('#chatter-settings').append("<input id='numPeeps' type='text' name='numPeeps' placeholder='Limit is 6. DONT GO ABOVE'>");
+        $('#chatter-settings').append("<div id='group-buttons'></div>");
+        $('#group-buttons').append('<form></form>');
+        $('#group-buttons').append("<input id='start-group' type='submit', value='Start'>");
+        $('#group-buttons').append("<input id='stop-group' type='submit', value='Stop' disabled><br /><br /><br />");
+        $('#chatter-settings').append("<textarea id='group-log' rows='20', cols='150' disabled></textarea><br /><br />");
+        $('#chatter-settings').append("<label for='addInput'>Send your own messages here</label><br />");
+        $('#chatter-settings').append("<input id='addInput' name='addInput' type='text' disabled>");
+ 
+        $('#idleBox').on('click', function() {
+            if(document.getElementById('idleBox').checked) {
+                kickIdlers = true;
+                document.getElementById('idleText').disabled = false;
+            } else {
+                kickIdlers = false;
+                document.getElementById('idleText').disabled = true;
+            }
+        });
+        $('#start-group').on('click', function () {
+            var num = $('#numPeeps').val();
+            var _idleDelay = $('#idleText').val();
+            if (isNumeric(num) && parseInt(num) > 0 && ($('#idleBox').is(':checked') && isNumeric(_idleDelay) || !$('#idleBox').is(':checked'))) {
+                idleDelay = parseInt(_idleDelay);
+                setupGroup(parseInt(num));
+                $('#group-log').val('');
+                $('#start-group').prop('disabled', true);
+                $('#stop-group').prop('disabled', false);
+                $('#addInput').prop('disabled', false);
+            }
+        });
+        $('#stop-group').on('click', function () {
+            closeGroup();
+            $('#start-group').prop('disabled', false);
+            $('#stop-group').prop('disabled', true);
+            $('#addInput').prop('disabled', true);
+        });
+ 
+        $('#addInput').keypress(function(e) {
+            if(e.which == 13) {
+                broadcast(ownerNick + ': ' + $('#addInput').val());
+                $('#addInput').val('');
+            }
+        });
+    });
+}
+ 
+function runGroup() {
+    for(var name in chatterWindows) {
+        if(chatterWindows[name].connected) {
+            var messages = chatterWindows[name].document.getElementsByClassName(inputHTML);
+            for(i=chatterWindows[name].messageIndex; i < messages.length; i++) {
+                var message = messages[i].getElementsByTagName('span')[0].innerHTML;
+                if(!sendingCommands(message, name)){
+                    broadcast(name + ": " + message, { sender: name });
+                }
+            }
+            if(chatterWindows[name].messageIndex != messages.length) { //check if idling
+                chatterWindows[name].messageIndex = messages.length;
+                chatterWindows[name].idleCount = Date.now() + idleDelay;
+            }
+            if(kickIdlers && chatterWindows[name].idleCount < Date.now()) { //kick idlers
+                console.log("Kicking " + name);
+                chatterWindows[name].document.querySelector('button.disconnectbtn').click();
+                chatterWindows[name].document.querySelector('button.disconnectbtn').click();
+            }
+            if(chatterWindows[name].document.querySelector('button.disconnectbtn').innerHTML == "New<div class=\"btnkbshortcut\">Esc</div>") { //find new people
+                chatterWindows[name].connected = false;
+                broadcast(name + " has left the group chat. Looking for a person", { sender: name, connection: true });
+                chatterWindows[name].document.querySelector('button.disconnectbtn').click();
+            }
+        } else if(chatterWindows[name].document.getElementById(startButton)) { //starting
+            chatterWindows[name].document.getElementById(startButton).click();
+        } else if(chatterWindows[name].document.getElementsByClassName('statuslog').length > 0) {
+            var status = chatterWindows[name].document.getElementsByClassName('statuslog')[0].innerHTML;
+            if(status == "You're now chatting with a chatter. Say hello!") {
+                var newName = "Chatter "+ (counter++);
+                chatterWindows[name].connected = true;
+                chatterWindows[name].idleCount = Date.now() + idleDelay;
+                var welcome = "Welcome to chatter. Your nick is " + newName + ". Type !help for options. EXPECT BUGS";
+                if(kickIdlers) welcome += " You will be kicked if you dont send messages at least every " + idleDelay/1000 + " seconds";
+                chatterWindows[name].document.querySelector(chatbox).value = welcome;
+                chatterWindows[name].document.querySelector(sendButton).click();
+                chatterWindows[newName] = chatterWindows[name];
+                delete chatterWindows[name];
+                broadcast(newName + " has connected to the group chat", { sender: newName, connection: true });
+            } else if(status == "<div><div>Looking for a chatter...</div></div>") {
+                chatterWindows[name].document.querySelector('button.disconnectbtn').click();
+                chatterWindows[name].document.querySelector('button.disconnectbtn').click();
+            }
+        }
+        checkCaptcha(chatterWindows[name]);
+    }
+}
+ 
+function broadcast(message, opts) {
+    if(!opts) {
+        opts = {
+            sender : null,
+            connection : false
+        };
+    }
+    for(var name in chatterWindows) {
+        if(chatterWindows[name].connected) {
+            chatterWindows[name].document.querySelector(chatbox).value = "";
+            if(opts.sender && name == opts.sender)
+                chatterWindows[name].document.querySelector(chatbox).value += "(YOU) ";
+ 
+            if((opts.connection && chatterWindows[name].logConnections) || !opts.connection) {
+                chatterWindows[name].document.querySelector(chatbox).value += message;
+                chatterWindows[name].document.querySelector(sendButton).click();
+            }
+        }
+    }
+    document.getElementById('group-log').value += message + '\n';
+    $('#group-log').scrollTop($('#group-log')[0].scrollHeight);
+}
+ 
+function sendingCommands(message, user) {
+    if(message.substring(0, 6) == '!nick ') {
+        var newNick = message.substring(6, (message.length < 30) ? message.length : 30);
+        if (newNick != user) {
+            for(var name in chatterWindows) {
+                if(name == newNick || newNick == ownerNick) {
+                    chatterWindows[user].document.querySelector(chatbox).value = "That nickname has been taken";
+                    chatterWindows[user].document.querySelector(sendButton).click();
+                    return true;
+                }
+            }
+            chatterWindows[newNick] = chatterWindows[user];
+            delete chatterWindows[user];
+            message = user + " has changed his name to " + newNick;
+            broadcast(message, { sender: newNick });
+        }
+        return true;
+    } else if(message.substring(0, 12) == '!toggle-logs') {
+        chatterWindows[user].logConnections = (chatterWindows[user].logConnections) ? false : true;
+        if(chatterWindows[user].logConnections) { chatterWindows[user].document.querySelector(chatbox).value = "Notices have been enabled"; }
+        else { chatterWindows[user].document.querySelector(chatbox).value = "Notices have been disabled"; }
+        chatterWindows[user].document.querySelector(sendButton).click();
+        return true;
+    } else if(message.substring(0, 5) == '!help') {
+        chatterWindows[user].document.querySelector(chatbox).value = "************************************COMMAND OPTIONS************************************";
+        chatterWindows[user].document.querySelector(chatbox).value += "!nick newname --- Allows you to set your nickname";
+        chatterWindows[user].document.querySelector(chatbox).value += "\n!toggle-logs --- Enable/Disable notices on people who enter and leave the group chat";
+        chatterWindows[user].document.querySelector(sendButton).click();
+        return true;
+    }
+    return false;
+}
+ 
+function setupGroup(num) {
+    running = true;
+    amount = num;
+    console.log(amount);
+    for(i=0; i < amount; i++) {
+        chatterWindows[i] = window.open('http://chatter.com/', 'window '+i);
+        $(chatterWindows[i].document).ready(function() {
+            chatterWindows[i].document.title = 'window '+i;
+            chatterWindows[i].connected = false;
+            chatterWindows[i].messageIndex = 0;
+            chatterWindows[i].logConnections = true;
+        });
+    }
+    interval = setInterval(runGroup, 1000);
+}
+ 
+function closeGroup() {
+    broadcast('DISCONNECTING THE GROUP CHAT. GOODBYE LOSERS');
+    running = false;
+    for(var name in chatterWindows) {
+        chatterWindows[name].close();
+    }
+    clearInterval(interval);
+    chatterWindows = {};
+}
+ 
+function checkCaptcha(chatterWindow) {
+    if(chatterWindow.document.getElementById('recaptcha_area') && !chatterWindow.captchaNotice) {
+        chatterWindow.captchaNotice = true;
+        chatterWindows[name].document.querySelector(chatbox).value = "HEYY!!!! WE HAVE A CAPTCHA AT " + chatterWindow.name;
+        chatterWindows[name].document.querySelector(sendButton).click();
+    } else if(!chatterWindow.document.getElementById('recaptcha_area')) {
+        chatterWindow.captchaNotice = false;
+    }
+}
+ 
+function isNumeric(n) {
+    return !isNaN(parseFloat(n)) && isFinite(n);
+}
